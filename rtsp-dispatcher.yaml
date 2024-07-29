@@ -1,0 +1,19 @@
+servers:
+  - name: cam0
+    url: rtsp://users:passs@127.0.0.1:8554/test0/stream
+    width: 640
+    height: 480
+    fps: 25
+    encoder: libx264
+    profile: high444
+    preset: superfast
+    tune: zerolatency
+  - name: cam1
+    url: rtsp://users:passs@127.0.0.1:8554/test1/stream
+    width: 640
+    height: 480
+    fps: 25
+    encoder: libx264
+    profile: high444
+    preset: superfast
+    tune: zerolatency
