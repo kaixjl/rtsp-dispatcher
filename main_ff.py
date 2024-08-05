@@ -1,7 +1,9 @@
 import sys
-from collections import namedtuple, deque
+from collections import namedtuple
 import threading
 import subprocess
+import multiprocessing as mp
+import queue
 import time
 import yaml
 import cv2
@@ -42,7 +44,6 @@ class RtspPusherFF:
             '-f', 'rtsp', #  flv rtsp
             '-rtsp_transport', 'tcp', 
             self.url] # rtsp rtmp
-        self.open()
 
     def __del__(self):
         self.close()
@@ -61,20 +62,26 @@ class RtspPusherFF:
     
     def write(self, img):
         # type: (cv2.Mat) -> bool
-        if not self.opened: return False
+        if not self.opened:
+            self.open()
         self.writer.stdin.write(img.tobytes())
         return True
 
 class RtspDispatcher(threading.Thread):
-    MsgType = namedtuple("MsgType", ["cam", "img"])
-    def __init__(self, config="rtsp-dispatcher.yaml", capacity=50):
+    def __init__(self, config="rtsp-dispatcher.yaml", capacity=50, q=None):
+        # type: (str | dict, int, None | mp.Queue) -> None
         super(RtspDispatcher, self).__init__()
         if isinstance(config, str):
             with open(config, "r") as f:
                 config = yaml.safe_load(f)
         self.config = config
         self.capacity = capacity
-        self.deque = deque(maxlen=self.capacity) # type: deque[RtspDispatcher.MsgType]
+
+        if q is not None:
+            self.queue = q # type: mp.Queue[dict[str]]
+        else:
+            self.queue = mp.Queue(maxsize=self.capacity) # type: mp.Queue[dict[str]]
+
         self.cams = { it["name"]: RtspPusherFF(**{ k:v for k,v in it.items() if k!="name"}) for it in self.config["servers"] }
 
         # === multi-thread ===
@@ -82,8 +89,8 @@ class RtspDispatcher(threading.Thread):
         self.running = False
         # --- multi-thread ---
 
-    def push(self, cam, img):
-        # type: (str, np.ndarray) -> bool
+    def push(self, cam, img, block=True, timeout=None):
+        # type: (str, np.ndarray, bool, float | None) -> bool
         """
         # Args
         - cam: cam name
@@ -92,57 +99,58 @@ class RtspDispatcher(threading.Thread):
         if cam not in self.cams:
             print(f"Camera {cam} not found.", file=sys.stderr)
             return False
-        self.deque.append(RtspDispatcher.MsgType(cam=cam, img=img))
-        return True
+        try:
+            self.queue.put(dict(cam=cam, img=img), block=block, timeout=timeout)
+            return True
+        except Exception as e:
+            print(f"Received Exception while enqueing ({e})", file=sys.stderr)
+            return False
 
-    def process_one(self):
-        # type: () -> bool
-        if len(self.deque) == 0: return False
-        msg = self.deque.popleft()
-        self.cams[msg.cam].write(msg.img)
+    def process_one(self, block=True, timeout=None):
+        # type: (bool, float | None) -> bool
+        try:
+            msg = self.queue.get(block, timeout)
+            return self.cams[msg["cam"]].write(msg["img"])
+        except Exception as e:
+            print(f"Received Exception while processing ({e})", file=sys.stderr)
+            return False
 
     # === multi-thread ===
-    def push_safe(self, slot, msg):
-        self.lock.acquire(True, -1)
-        self.push(slot, msg)
-        self.lock.release()
-
-    def process_one_safe(self):
-        # type: () -> bool
-        if len(self.deque) == 0: return False
-        if self.lock.acquire(True, 1):
-            self.process_one()
-            self.lock.release()
-            return True
-        return False
 
     def run(self):
         self.running = True
         while self.running:
-            if len(self.deque) == 0:
-                time.sleep(0)
-                continue
-            if self.lock.acquire(False, -1):
-                if not self.running: break
-                self.process_one()
-                self.lock.release()
+            if not self.running: break
+            self.process_one()
 
     def stop(self):
         self.running = False
+
     # --- multi-thread ---
 
 
+def dispatch_rtsp(q):
+    dispatcher = RtspDispatcher("rtsp-dispatcher.yaml", q=q)
+    dispatcher.run()
+
+
 def main():
-    dispatcher = RtspDispatcher("rtsp-dispatcher.yaml")
-    dispatcher.start()
+    q = mp.Queue(50)
+    subproc = mp.Process(target=dispatch_rtsp, args=(q,))
+    subproc.start()
+
     fps = 25
     i = 0
+    cams = ["cam0", "cam1", "cam2", "cam3"]
+    starts = [0, 45, 90, 135]
+    lengths = [45, 45, 45, 45]
     while True:
-        i = (i + 1) % (fps * 5)
-        img = np.ones((480, 640, 3), dtype=np.uint8) * 255
-        img[:,:,0] = int(i / (fps * 5 - 1) * 180)
-        img = cv2.cvtColor(img, cv2.COLOR_HSV2BGR)
-        dispatcher.push("cam0", img)
+        i = (i + 1) % (fps * 5) # 0 ~ (fps * 5 - 1)
+        for j in range(len(cams)):
+            img = np.ones((480, 640, 3), dtype=np.uint8) * 255
+            img[:,:,0] = starts[j] + int(i / (fps * 5 - 1) * lengths[j])
+            img = cv2.cvtColor(img, cv2.COLOR_HSV2BGR)
+            q.put(dict(cam=cams[j], img=img))
         time.sleep(1/fps)
 
     dispatcher.stop()
