@@ -150,7 +150,7 @@ def main():
         currtime = time.time()
         i = (i + 1) % (fps * 5) # 0 ~ (fps * 5 - 1)
         for j in range(len(cams)):
-            img = np.ones((480, 640, 3), dtype=np.uint8) * 255
+            img = np.ones((1080, 1920, 3), dtype=np.uint8) * 255
             img[:,:,0] = starts[j] + int(i / (fps * 5 - 1) * lengths[j])
             img = cv2.cvtColor(img, cv2.COLOR_HSV2BGR)
             q.put(dict(cam=cams[j], img=img))
