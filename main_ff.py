@@ -39,7 +39,6 @@ class RtspPusherFF:
             '-i', '-',
             '-c:v', self.encoder,
             '-pix_fmt', 'yuv420p',
-            '-preset', 'ultrafast',
             *params,
             '-f', 'rtsp', #  flv rtsp
             '-rtsp_transport', 'tcp', 
@@ -119,9 +118,12 @@ class RtspDispatcher(threading.Thread):
 
     def run(self):
         self.running = True
+        currtime = time.time()
         while self.running:
             if not self.running: break
             self.process_one()
+            print(f"pull time per frame: {(time.time()-currtime)*1000:.2f}ms")
+            currtime = time.time()
 
     def stop(self):
         self.running = False
@@ -145,13 +147,17 @@ def main():
     starts = [0, 45, 90, 135]
     lengths = [45, 45, 45, 45]
     while True:
+        currtime = time.time()
         i = (i + 1) % (fps * 5) # 0 ~ (fps * 5 - 1)
         for j in range(len(cams)):
             img = np.ones((480, 640, 3), dtype=np.uint8) * 255
             img[:,:,0] = starts[j] + int(i / (fps * 5 - 1) * lengths[j])
             img = cv2.cvtColor(img, cv2.COLOR_HSV2BGR)
             q.put(dict(cam=cams[j], img=img))
-        time.sleep(1/fps)
+        difftime = time.time() - currtime
+        print(f"push difftime: {difftime*1000:.2f}ms")
+        time.sleep(max(1/fps - difftime, 0))
+        print(f"push time per frame: {(time.time()-currtime)*1000:.2f}ms")
 
     dispatcher.stop()
     dispatcher.join()
